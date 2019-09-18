@@ -27,7 +27,8 @@ list() {
 }
 
 main() {
-    WARNVER="$(vault list secret 2>&1 > /dev/null)"
+    KVROOT=$(vault secrets list -format=json | jq -r 'to_entries[] | select(.value.type =="kv") | .key')
+    WARNVER="$(vault list $KVROOT 2>&1 > /dev/null)"
     echo $WARNVER|grep "Invalid path for a versioned K/V secrets" > /dev/null
 
     if [[ $? = 0 ]]; then
@@ -45,7 +46,7 @@ main() {
     echo "#!/bin/bash" > $OUT
     chmod +x $OUT
 
-    list secret/
+    list $KVROOT
 }
 
 main
