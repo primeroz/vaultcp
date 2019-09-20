@@ -1,6 +1,6 @@
 # vaultcp
 
-## vaultcpgo
+## vaultcp.go
 Recursive listing and copying between Vault clusters
 
 * Ported functionality of vaultcp.sh and vaultls.sh to golang - Faster!
