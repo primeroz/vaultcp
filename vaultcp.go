@@ -5,9 +5,11 @@ package main
 // See: https://godoc.org/github.com/hashicorp/vault/api
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -25,13 +27,15 @@ var (
 	listFile   *os.File
 
 	// flags below
-	numWorkers    *int
-	doCopy        *bool
-	doMirror      *bool
-	srcVaultAddr  *string
-	dstVaultAddr  *string
-	srcVaultToken *string
-	dstVaultToken *string
+	numWorkers     *int
+	doCopy         *bool
+	doMirror       *bool
+	srcInputFile   *string
+	srcVaultAddr   *string
+	dstVaultAddr   *string
+	srcVaultToken  *string
+	dstVaultToken  *string
+	listOutputFile *string
 )
 
 func list2(path string) (err error) {
@@ -66,11 +70,20 @@ func list2(path string) (err error) {
 
 func copy(path string) (err error) {
 	srcKV := map[string]interface{}{}
-	err = list(srcClients[0], path, false, srcKV)
-	if err != nil {
-		return err
+
+	if *srcInputFile != "" {
+		err = listFromFile(srcKV)
+		if err != nil {
+			return err
+		}
+	} else {
+		err = list(srcClients[0], path, false, srcKV)
+		if err != nil {
+			return err
+		}
 	}
 
+	// TODO: determine if these are in the source Vault and if so optionally overwrite them if the data is different
 	dstKV := map[string]interface{}{}
 	err = list(dstClients[0], path, false, dstKV)
 	if err != nil {
@@ -80,7 +93,6 @@ func copy(path string) (err error) {
 	numdstkeys := len(dstKV)
 	if numdstkeys > 0 {
 		log.Printf("Warning: The destination Vault already has %d keys\n", numdstkeys)
-		// TODO: determine if these are in the source Vault and if so optionally overwrite them if the data is different
 	}
 
 	numsrckeys := len(srcKV)
@@ -99,6 +111,7 @@ func copy(path string) (err error) {
 
 	count := 0
 	for k, sv := range srcKV {
+		// TODO: don't list and read dest unless doMirror
 		dv := dstKV[k]
 		if dv == "" || dv == nil {
 			log.Printf("Copy (for create) src to dst vault: %s value: %s\n", k, sv)
@@ -167,16 +180,17 @@ func listWorker(id int, job map[string]interface{}, wg *sync.WaitGroup) {
 
 func writeWorker(id int, job map[string]interface{}, wg *sync.WaitGroup) {
 	fmt.Println("write worker", id, "starting write job of ", len(job), " keys")
+	var err error
 	for k, v := range job {
-		// Assert v == nil; lazy read to help parallelization
-		log.Printf("write worker %d reading %s\n", id, k)
-		var err error
-		v, err = readRaw(srcClients[id], k)
-		if err != nil {
-			log.Printf("Error from readRaw: %s\n", err)
+		if v == nil || v == "" {
+			log.Printf("write worker %d reading %s\n", id, k)
+			v, err = readRaw(srcClients[id], k)
+			if err != nil {
+				log.Printf("Error from readRaw: %s\n", err)
+			}
+		} else {
 		}
-
-		log.Printf("write worker %d writing %s => %v\n", id, k, v)
+		log.Printf("!!! write worker %d writing %s => %+v\n", id, k, v)
 		_, err = dstClients[id].Logical().Write(k, v.(map[string]interface{}))
 		if err != nil {
 			log.Printf("Error from Vault write: %s\n", err)
@@ -184,6 +198,36 @@ func writeWorker(id int, job map[string]interface{}, wg *sync.WaitGroup) {
 	}
 	fmt.Println("write worker", id, "finished write job of", len(job), " keys")
 	wg.Done()
+}
+
+func listFromFile(kv map[string]interface{}) (err error) {
+
+	f, err := os.Open(*srcInputFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+
+	for {
+		str, err := reader.ReadString('\n')
+		if err == io.EOF {
+			break
+		}
+		parts := strings.Split(str, " ")
+		k := strings.TrimSuffix(parts[0], "\n")
+		v := strings.TrimSuffix(parts[1], "\n")
+		// TODO consider which version of kv api (currently supporting only v2)
+		if kvApi {
+			v = fmt.Sprintf("{\"data\":%s}", v)
+		} else {
+		}
+		var x map[string]interface{}
+		json.Unmarshal([]byte(v), &x)
+		kv[k] = x
+	}
+	return err // nil
 }
 
 func list(client *api.Client, path string, outputAndRead bool, kv map[string]interface{}) (err error) {
@@ -256,12 +300,7 @@ func readRaw(client *api.Client, path string) (value map[string]interface{}, err
 		return value, err
 	}
 
-	if kvApi {
-		// value = s.Data["data"] // REVISIT
-		value = s.Data
-	} else {
-		value = s.Data
-	}
+	value = s.Data
 
 	return value, err
 }
@@ -297,10 +336,12 @@ func prep() {
 	numWorkers = flag.Int("numWorkers", 10, "Number of workers to enable parallel execution")
 	doCopy = flag.Bool("doCopy", false, "Copy the secrets from the source to destination Vault (default: false)")
 	doMirror = flag.Bool("doMirror", false, "Like doCopy but destination Vault entries not in the source Vault will be deleted (default: false)")
-	srcVaultAddr = flag.String("srcVaultAddr", "http://127.0.0.1:8200", "Source Vault address (required)")
-	srcVaultToken = flag.String("srcVaultToken", "", "Source Vault token (required)")
+	srcInputFile = flag.String("srcInputFile", "", "Source input file to read from instead of srcVaultAddr,srceVaultToken (use with doCopy, doMirror)")
+	srcVaultAddr = flag.String("srcVaultAddr", "", "Source Vault address (required except when using srcInputFile)")
+	srcVaultToken = flag.String("srcVaultToken", "", "Source Vault token (required except when using srcInputFile)")
 	dstVaultAddr = flag.String("dstVaultAddr", "", "Destination Vault address (required for doCopy and doMirror)")
 	dstVaultToken = flag.String("dstVaultToken", "", "Destination Vault token (required for doCopy and doMirror)")
+	listOutputFile = flag.String("listOutputFile", "/tmp/vaultcp.out", "File to write listing (suitable for use by srcInputFile)")
 	flag.Parse()
 
 	if *numWorkers < 1 {
@@ -308,21 +349,41 @@ func prep() {
 		os.Exit(1)
 	}
 
+	if *srcInputFile != "" && *srcVaultAddr != "" {
+		log.Printf("Error: srcInputFile and srcVaultAddr are both defined. Use on or the other\n")
+		os.Exit(1)
+	}
+
+	if *srcInputFile != "" && *doCopy == false && *doMirror == false {
+		log.Printf("Error: srcInputFile must be specified together with either doCopy or doMirror\n")
+		os.Exit(1)
+	}
+
 	var err error
 	var srcClient *api.Client
 	var dstClient *api.Client
-	srcClients = make([]*api.Client, *numWorkers)
+	var srcKvApi bool
+	var srcKvRoot string
+	var dstKvApi bool
+	var dstKvRoot string
+
+	if *srcVaultAddr != "" {
+		srcClients = make([]*api.Client, *numWorkers)
+	}
+
 	dstClients = make([]*api.Client, *numWorkers)
 	for i := 0; i < *numWorkers; i++ {
-		srcClient, err = api.NewClient(&api.Config{
-			Address: *srcVaultAddr,
-		})
-		if err != nil {
-			log.Printf("Error from vault NewClient : %s\n", err)
-			os.Exit(1)
-		}
-		srcClient.SetToken(*srcVaultToken)
-		srcClients[i] = srcClient
+		if *srcVaultAddr != "" {
+			srcClient, err = api.NewClient(&api.Config{
+				Address: *srcVaultAddr,
+			})
+			if err != nil {
+				log.Printf("Error from vault NewClient : %s\n", err)
+				os.Exit(1)
+			}
+			srcClient.SetToken(*srcVaultToken)
+			srcClients[i] = srcClient
+		} // else we do not need srcClien connections as we will read from srcInputFile
 
 		if *doCopy || *doMirror {
 			dstClient, err = api.NewClient(&api.Config{
@@ -337,12 +398,6 @@ func prep() {
 		}
 	}
 
-	srcKvApi, srcKvRoot, err := fetchVersionInfo(srcClients[0])
-	if err != nil {
-		log.Printf("Error fetching version info: %s", err)
-		os.Exit(1)
-	}
-
 	if *doCopy || *doMirror {
 		if *dstVaultAddr == "" {
 			log.Printf("Unspecified dstVaultAddr\n")
@@ -354,23 +409,45 @@ func prep() {
 			os.Exit(1)
 		}
 
-		dstKvApi, dstKvRoot, err := fetchVersionInfo(dstClients[0])
+		dstKvApi, dstKvRoot, err = fetchVersionInfo(dstClients[0])
 		if err != nil {
 			log.Printf("Error fetching version info: %s", err)
 			os.Exit(1)
 		}
 
-		if dstKvApi != srcKvApi {
-			log.Printf("The Vault kv api is different betwen the source and destination Vaults\n")
-			os.Exit(1)
+		if *srcVaultAddr != "" {
+			srcKvApi, srcKvRoot, err = fetchVersionInfo(srcClients[0])
+			if err != nil {
+				log.Printf("Error fetching version info: %s", err)
+				os.Exit(1)
+			}
+			if dstKvApi != srcKvApi {
+				log.Printf("The Vault kv api is different betwen the source and destination Vaults\n")
+				os.Exit(1)
+			}
+			if dstKvRoot != srcKvRoot {
+				log.Printf("The Vault kv root is different betwen the source and destination Vaults\n")
+				os.Exit(1)
+			}
+			kvApi = srcKvApi
+			kvRoot = srcKvRoot
+		} else {
+			// we will read from srcInputFile
+			kvApi = dstKvApi
+			kvRoot = dstKvRoot
 		}
-		if dstKvRoot != srcKvRoot {
-			log.Printf("The Vault kv root is different betwen the source and destination Vaults\n")
-			os.Exit(1)
-		}
+	} else {
+		// listing src vault mode
+		if *srcVaultAddr != "" {
+			srcKvApi, srcKvRoot, err = fetchVersionInfo(srcClients[0])
+			if err != nil {
+				log.Printf("Error fetching version info: %s", err)
+				os.Exit(1)
+			}
+			kvApi = srcKvApi
+			kvRoot = srcKvRoot
+		} // else case will not happen as per the earlier prep chceck
 	}
-	kvApi = srcKvApi
-	kvRoot = srcKvRoot
 }
 
 func main() {
@@ -395,9 +472,9 @@ func main() {
 		}
 	} else {
 		var err error
-		listFile, err = os.Create("/tmp/vaultcp.out")
+		listFile, err = os.Create(*listOutputFile)
 		if err != nil {
-			log.Printf("Error creating list output file: %s", err)
+			log.Printf("Error creating list output file %s: %s", *listOutputFile, err)
 			os.Exit(1)
 		}
 		defer listFile.Close()
