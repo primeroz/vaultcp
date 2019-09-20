@@ -1,5 +1,13 @@
 # vaultcp
 
+## vaultcpgo
+Recursive listing and copying between Vault clusters
+
+* Ported functionality of vaultcp.sh and vaultls.sh to golang - Faster!
+* Live copy from source Vault to dest Vault (no code generation step in the middle)
+* Recursive list of a source Vault produces an output file containg the path to each secret and its data value
+* Support pre and post Vault v0.10 style kv api
+
 ## vaultcp.sh
 Copy secrets between vault clusters
 
