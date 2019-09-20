@@ -20,6 +20,7 @@ import (
 )
 
 var (
+	working    bool = false
 	kvRoot     string = ""
 	kvApi      bool   = false
 	srcClients []*api.Client
@@ -344,25 +345,62 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, msg)
 }
 
+func setWorking(flag bool) {
+	working = flag
+}
+
 func listHandler(w http.ResponseWriter, r *http.Request) {
+	if working {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "busy: try again later")
+		return
+	}
+	setWorking(true)
+	defer setWorking(false)
+
+	vars := mux.Vars(r)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-
-	io.WriteString(w, `{"list": true}`)
+	msg := fmt.Sprintf("{\"list\":{\"srcaddr\":\"%s\",\"srctoken\":\"%s\"}}", vars["srcaddr"], vars["srctoken"])
+	io.WriteString(w, msg)
 }
 
 func copyFromFileHandler(w http.ResponseWriter, r *http.Request) {
+	if working {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "busy: try again later")
+		return
+	}
+	setWorking(true)
+	defer setWorking(false)
+
+	vars := mux.Vars(r)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	io.WriteString(w, `{"copyFromFile": true}`)
+	msg := fmt.Sprintf("{\"copyFromFile\":{\"dstaddr\":\"%s\",\"dsttoken\":\"%s\"}}", vars["dstaddr"], vars["dsttoken"])
+	io.WriteString(w, msg)
 }
 
 func copyFromVaultHandler(w http.ResponseWriter, r *http.Request) {
+	if working {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "busy: try again later")
+		return
+	}
+	setWorking(true)
+	defer setWorking(false)
+
+	vars := mux.Vars(r)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	io.WriteString(w, `{"copyFromVault": true}`)
+	msg := fmt.Sprintf("{\"copyFromVault\":{\"srcaddr\":\"%s\",\"srctoken\":\"%s\",\"dstaddr\":\"%s\",\"dsttoken\":\"%s\"}}",
+		vars["srcaddr"], vars["srctoken"], vars["dstaddr"], vars["dsttoken"])
+	io.WriteString(w, msg)
 }
 
 func flags() (err error) {
@@ -616,9 +654,9 @@ func main() {
 	if *listenPort > 0 {
 		r := mux.NewRouter()
 		r.HandleFunc("/health", healthHandler).Methods(http.MethodGet)
-		r.HandleFunc("/list", listHandler).Methods(http.MethodGet)
-		r.HandleFunc("/copyfromfile", copyFromFileHandler).Methods(http.MethodPost)
-		r.HandleFunc("/copyfromvault/{destaddr}/{desttoken}", copyFromVaultHandler).Methods(http.MethodPost)
+		r.HandleFunc("/list/{srcaddr}/{srctoken}", listHandler).Methods(http.MethodGet)
+		r.HandleFunc("/copyfromfile/{dstaddr}/{dsttoken}", copyFromFileHandler).Methods(http.MethodPost)
+		r.HandleFunc("/copyfromvault/{srcaddr}/{srctoken}/{dstaddr}/{dsttoken}", copyFromVaultHandler).Methods(http.MethodPost)
 		addr  := fmt.Sprintf("localhost:%d", *listenPort)
 		log.Fatal(http.ListenAndServe(addr, r))
 	}
