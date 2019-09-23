@@ -349,6 +349,16 @@ func setWorking(flag bool) {
 	working = flag
 }
 
+func resetForListVaultAction(srcaddr, srctoken string) {
+	*doCopy = false
+	*doMirror = false
+	*srcInputFile = ""
+	*srcVaultAddr = srcaddr
+	*dstVaultAddr = ""
+	*srcVaultToken = srctoken
+	*dstVaultToken = ""
+}
+
 func listHandler(w http.ResponseWriter, r *http.Request) {
 	if working {
 		w.WriteHeader(http.StatusForbidden)
@@ -360,10 +370,51 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 
 	vars := mux.Vars(r)
 
-	w.Header().Set("Content-Type", "application/json")
+        srctoken := r.Header.Get("X-Vault-Token")
+	scheme := vars["scheme"]
+	host := vars["host"]
+	port := vars["port"]
+	srcaddr := fmt.Sprintf("%s://%s:%s", scheme, host, port)
+
+	resetForListVaultAction(srcaddr, srctoken)
+
+	log.Printf("1 listHandler srcAddr = %s\n", *srcVaultAddr)
+	err := prepConnections()
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("2 listHandler srcAddr = %s\n", *srcVaultAddr)
+	err = prepForAction()
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("3 listHandler srcAddr = %s\n", *srcVaultAddr)
+	err = doAction()
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("4 listHandler srcAddr = %s\n", *srcVaultAddr)
+	file, err := os.Open(*listOutputFile)
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("5 listHandler srcAddr = %s\n", *srcVaultAddr)
+	io.Copy(w, file)
+
+	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	msg := fmt.Sprintf("{\"list\":{\"srcaddr\":\"%s\"}}", vars["srcaddr"])
-	io.WriteString(w, msg)
 }
 
 func copyFromFileHandler(w http.ResponseWriter, r *http.Request) {
@@ -433,18 +484,16 @@ func flags() (out string, err error) {
 		return out, err
 	}
 
-	if *srcInputFile == "" && *srcVaultAddr == "" {
-		err = fmt.Errorf("Error: srcInputFile or and srcVaultAddr must be defined")
+	if *listenPort < 0 {
+		err = fmt.Errorf("Error: Illegal listenPort value. It must be > 0 to act as a server listening on this port")
+		return out, err
+	} else if *listenPort == 0 && *srcInputFile == "" && *srcVaultAddr == "" {
+		err = fmt.Errorf("Error: srcInputFile or srcVaultAddr must be defined")
 		return out, err
 	}
 
 	if *srcInputFile != "" && *doCopy == false && *doMirror == false {
 		err = fmt.Errorf("Error: srcInputFile must be specified together with either doCopy or doMirror")
-		return out, err
-	}
-
-	if *listenPort < 0 {
-		err = fmt.Errorf("Error: Illegal listenPort value. It must be > 0 to act as a server listening on this port")
 		return out, err
 	}
 
@@ -615,7 +664,7 @@ func main() {
 	if *listenPort > 0 {
 		r := mux.NewRouter()
 		r.HandleFunc("/health", healthHandler).Methods(http.MethodGet)
-		r.HandleFunc("/list/{srcaddr}", listHandler).Methods(http.MethodGet)
+		r.HandleFunc("/list/{scheme}/{host}/{port}", listHandler).Methods(http.MethodGet)
 		r.HandleFunc("/copyfromfile/{dstaddr}/", copyFromFileHandler).Methods(http.MethodPost)
 		r.HandleFunc("/copyfromvault/{srcaddr}/{dstaddr}", copyFromVaultHandler).Methods(http.MethodPost)
 		addr  := fmt.Sprintf("localhost:%d", *listenPort)
