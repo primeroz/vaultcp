@@ -31,7 +31,7 @@ var (
 	// flags below
 	listenPort     *int
 	numWorkers     *int
-	version        *bool
+	version        *string
 	doCopy         *bool
 	doMirror       *bool
 	srcInputFile   *string
@@ -362,7 +362,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	msg := fmt.Sprintf("{\"list\":{\"srcaddr\":\"%s\",\"srctoken\":\"%s\"}}", vars["srcaddr"], vars["srctoken"])
+	msg := fmt.Sprintf("{\"list\":{\"srcaddr\":\"%s\"}}", vars["srcaddr"])
 	io.WriteString(w, msg)
 }
 
@@ -380,7 +380,7 @@ func copyFromFileHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	msg := fmt.Sprintf("{\"copyFromFile\":{\"dstaddr\":\"%s\",\"dsttoken\":\"%s\"}}", vars["dstaddr"], vars["dsttoken"])
+	msg := fmt.Sprintf("{\"copyFromFile\":{\"dstaddr\":\"%s\"}}", vars["dstaddr"])
 	io.WriteString(w, msg)
 }
 
@@ -398,12 +398,12 @@ func copyFromVaultHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	msg := fmt.Sprintf("{\"copyFromVault\":{\"srcaddr\":\"%s\",\"srctoken\":\"%s\",\"dstaddr\":\"%s\",\"dsttoken\":\"%s\"}}",
-		vars["srcaddr"], vars["srctoken"], vars["dstaddr"], vars["dsttoken"])
+	msg := fmt.Sprintf("{\"copyFromVault\":{\"srcaddr\":\"%s\",\"dstaddr\":\"%s\"}}",
+		vars["srcaddr"], vars["dstaddr"])
 	io.WriteString(w, msg)
 }
 
-func flags() (err error) {
+func flags() (out string, err error) {
 	listenPort = flag.Int("listenPort", 0, "Http Listen port (when > 0 act as a server)")
 	numWorkers = flag.Int("numWorkers", 10, "Number of workers to enable parallel execution")
 	doCopy = flag.Bool("doCopy", false, "Copy the secrets from the source to destination Vault (default: false)")
@@ -414,35 +414,41 @@ func flags() (err error) {
 	dstVaultAddr = flag.String("dstVaultAddr", "", "Destination Vault address (required for doCopy and doMirror)")
 	dstVaultToken = flag.String("dstVaultToken", "", "Destination Vault token (required for doCopy and doMirror)")
 	listOutputFile = flag.String("listOutputFile", "/tmp/vaultcp.out", "File to write listing (suitable for use by srcInputFile)")
-        version = flag.Bool("v", false, "print current version and exit")
+        version = flag.String("v", "false", "set to \"true\" to print current version and exit")
 
 	flag.Parse()
 
+	if *version == "true" {
+		out = versionString
+		return out, err
+	}
+
 	if *numWorkers < 1 {
 		err = fmt.Errorf("Error: Illegal value %d for numWorkers; it must be > 0", *numWorkers)
-		return err
+		return out, err
 	}
 
 	if *srcInputFile != "" && *srcVaultAddr != "" {
 		err = fmt.Errorf("Error: srcInputFile and srcVaultAddr are both defined. Use on or the other")
-		return err
+		return out, err
+	}
+
+	if *srcInputFile == "" && *srcVaultAddr == "" {
+		err = fmt.Errorf("Error: srcInputFile or and srcVaultAddr must be defined")
+		return out, err
 	}
 
 	if *srcInputFile != "" && *doCopy == false && *doMirror == false {
 		err = fmt.Errorf("Error: srcInputFile must be specified together with either doCopy or doMirror")
-		return err
+		return out, err
 	}
 
 	if *listenPort < 0 {
 		err = fmt.Errorf("Error: Illegal listenPort value. It must be > 0 to act as a server listening on this port")
-		return err
+		return out, err
 	}
 
-	if *version {
-		err = fmt.Errorf("vaultcp version: %s\n", versionString)
-		return err
-	}
-	return err // nil
+	return out, err // err == nil
 }
 
 /*
@@ -494,6 +500,9 @@ func prepForAction() (err error) {
 			}
 			kvApi = srcKvApi
 			kvRoot = srcKvRoot
+		} else if *srcInputFile == "" {
+			err = fmt.Errorf("You must specifiy either a srcInputFile or srcVaultAddr\n")
+			return err
 		} else {
 			// we will read from srcInputFile
 			kvApi = dstKvApi
@@ -534,7 +543,7 @@ func prepConnections() (err error) {
 			}
 			srcClient.SetToken(*srcVaultToken)
 			srcClients[i] = srcClient
-		} // else we do not need srcClien connections as we will read from srcInputFile
+		} // else we do not need srcClient connections as we will read from srcInputFile
 
 		if *doCopy || *doMirror {
 			dstClient, err = api.NewClient(&api.Config{
@@ -549,58 +558,6 @@ func prepConnections() (err error) {
 		}
 	}
 
-/*
-	if *doCopy || *doMirror {
-		if *dstVaultAddr == "" {
-			err = fmt.Errorf("Unspecified dstVaultAddr\n")
-			return err
-		}
-
-		if *dstVaultToken == "" {
-			err = fmt.Errorf("Unspecified dstVaultToken\n")
-			return err
-		}
-
-		dstKvApi, dstKvRoot, err = fetchVersionInfo(dstClients[0])
-		if err != nil {
-			err = fmt.Errorf("Error fetching version info: %s", err)
-			return err
-		}
-
-		if *srcVaultAddr != "" {
-			srcKvApi, srcKvRoot, err = fetchVersionInfo(srcClients[0])
-			if err != nil {
-				err = fmt.Errorf("Error fetching version info: %s", err)
-				return err
-			}
-			if dstKvApi != srcKvApi {
-				err = fmt.Errorf("The Vault kv api is different betwen the source and destination Vaults\n")
-				return err
-			}
-			if dstKvRoot != srcKvRoot {
-				err = fmt.Errorf("The Vault kv root is different betwen the source and destination Vaults\n")
-				return err
-			}
-			kvApi = srcKvApi
-			kvRoot = srcKvRoot
-		} else {
-			// we will read from srcInputFile
-			kvApi = dstKvApi
-			kvRoot = dstKvRoot
-		}
-	} else {
-		// listing src vault mode
-		if *srcVaultAddr != "" {
-			srcKvApi, srcKvRoot, err = fetchVersionInfo(srcClients[0])
-			if err != nil {
-				err = fmt.Errorf("Error fetching version info: %s", err)
-				return err
-			}
-			kvApi = srcKvApi
-			kvRoot = srcKvRoot
-		} // else case will not happen as per the earlier prepConnections chceck
-	}
-*/
 	return err // nil
 }
 
@@ -645,18 +602,22 @@ func doAction() (err error) {
 func main() {
 	var err error
 
-	err = flags()
+	out, err := flags()
 	if err != nil {
 		log.Printf("%s", err)
 		os.Exit(1)
+	}
+	if out != "" {
+		log.Printf("%s", out)
+		os.Exit(0)
 	}
 
 	if *listenPort > 0 {
 		r := mux.NewRouter()
 		r.HandleFunc("/health", healthHandler).Methods(http.MethodGet)
-		r.HandleFunc("/list/{srcaddr}/{srctoken}", listHandler).Methods(http.MethodGet)
-		r.HandleFunc("/copyfromfile/{dstaddr}/{dsttoken}", copyFromFileHandler).Methods(http.MethodPost)
-		r.HandleFunc("/copyfromvault/{srcaddr}/{srctoken}/{dstaddr}/{dsttoken}", copyFromVaultHandler).Methods(http.MethodPost)
+		r.HandleFunc("/list/{srcaddr}", listHandler).Methods(http.MethodGet)
+		r.HandleFunc("/copyfromfile/{dstaddr}/", copyFromFileHandler).Methods(http.MethodPost)
+		r.HandleFunc("/copyfromvault/{srcaddr}/{dstaddr}", copyFromVaultHandler).Methods(http.MethodPost)
 		addr  := fmt.Sprintf("localhost:%d", *listenPort)
 		log.Fatal(http.ListenAndServe(addr, r))
 	}
