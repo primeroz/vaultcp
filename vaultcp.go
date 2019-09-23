@@ -1,7 +1,5 @@
 package main
 
-// ./main -srcVaultToken bc124930-2f94-0dff-82d1-0f27e3def7f9 -srcVaultAddr https://internal-em-kr-V1PAp-JJ1FWB5N2S8N-1431743172.us-west-2.elb.amazonaws.com -dstVaultToken 7823288b-9c9c-59d7-957e-ef0f25601b50 -dstVaultAddr http://127.0.0.1:8200 -doCopy
-
 // See: https://godoc.org/github.com/hashicorp/vault/api
 
 import (
@@ -11,23 +9,29 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/hashicorp/vault/api"
+	"github.com/gorilla/mux"
 )
 
 var (
+	working    bool = false
 	kvRoot     string = ""
 	kvApi      bool   = false
 	srcClients []*api.Client
 	dstClients []*api.Client
 	listFile   *os.File
+	versionString string
 
 	// flags below
+	listenPort     *int
 	numWorkers     *int
+	version        string
 	doCopy         *bool
 	doMirror       *bool
 	srcInputFile   *string
@@ -332,7 +336,75 @@ func fetchVersionInfo(client *api.Client) (kvApiLocal bool, kvRoot string, err e
 	return kvApiLocal, kvRoot, err
 }
 
-func prep() {
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	//msg := "{\"a\":\"b\"}"
+	msg := "{\"endpoints\":{\"health\":\"GET\",\"list\":\"GET\",\"copyfromfile\":\"POST\",\"copyfromvault\":\"POST\"}"
+	io.WriteString(w, msg)
+}
+
+func setWorking(flag bool) {
+	working = flag
+}
+
+func listHandler(w http.ResponseWriter, r *http.Request) {
+	if working {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "busy: try again later")
+		return
+	}
+	setWorking(true)
+	defer setWorking(false)
+
+	vars := mux.Vars(r)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	msg := fmt.Sprintf("{\"list\":{\"srcaddr\":\"%s\"}}", vars["srcaddr"])
+	io.WriteString(w, msg)
+}
+
+func copyFromFileHandler(w http.ResponseWriter, r *http.Request) {
+	if working {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "busy: try again later")
+		return
+	}
+	setWorking(true)
+	defer setWorking(false)
+
+	vars := mux.Vars(r)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	msg := fmt.Sprintf("{\"copyFromFile\":{\"dstaddr\":\"%s\"}}", vars["dstaddr"])
+	io.WriteString(w, msg)
+}
+
+func copyFromVaultHandler(w http.ResponseWriter, r *http.Request) {
+	if working {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "busy: try again later")
+		return
+	}
+	setWorking(true)
+	defer setWorking(false)
+
+	vars := mux.Vars(r)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	msg := fmt.Sprintf("{\"copyFromVault\":{\"srcaddr\":\"%s\",\"dstaddr\":\"%s\"}}",
+		vars["srcaddr"], vars["dstaddr"])
+	io.WriteString(w, msg)
+}
+
+func flags() (out string, err error) {
+	listenPort = flag.Int("listenPort", 0, "Http Listen port (when > 0 act as a server)")
 	numWorkers = flag.Int("numWorkers", 10, "Number of workers to enable parallel execution")
 	doCopy = flag.Bool("doCopy", false, "Copy the secrets from the source to destination Vault (default: false)")
 	doMirror = flag.Bool("doMirror", false, "Like doCopy but destination Vault entries not in the source Vault will be deleted (default: false)")
@@ -342,30 +414,118 @@ func prep() {
 	dstVaultAddr = flag.String("dstVaultAddr", "", "Destination Vault address (required for doCopy and doMirror)")
 	dstVaultToken = flag.String("dstVaultToken", "", "Destination Vault token (required for doCopy and doMirror)")
 	listOutputFile = flag.String("listOutputFile", "/tmp/vaultcp.out", "File to write listing (suitable for use by srcInputFile)")
+        flag.StringVar(&version, "v", "false", "set to \"true\" to print current version and exit")
+
 	flag.Parse()
 
+	if version == "true" {
+		out = versionString
+		return out, err
+	}
+
 	if *numWorkers < 1 {
-		log.Printf("Error: Illegal value %d for numWorkers; it must be > 0\n", *numWorkers)
-		os.Exit(1)
+		err = fmt.Errorf("Error: Illegal value %d for numWorkers; it must be > 0", *numWorkers)
+		return out, err
 	}
 
 	if *srcInputFile != "" && *srcVaultAddr != "" {
-		log.Printf("Error: srcInputFile and srcVaultAddr are both defined. Use on or the other\n")
-		os.Exit(1)
+		err = fmt.Errorf("Error: srcInputFile and srcVaultAddr are both defined. Use on or the other")
+		return out, err
+	}
+
+	if *srcInputFile == "" && *srcVaultAddr == "" {
+		err = fmt.Errorf("Error: srcInputFile or and srcVaultAddr must be defined")
+		return out, err
 	}
 
 	if *srcInputFile != "" && *doCopy == false && *doMirror == false {
-		log.Printf("Error: srcInputFile must be specified together with either doCopy or doMirror\n")
-		os.Exit(1)
+		err = fmt.Errorf("Error: srcInputFile must be specified together with either doCopy or doMirror")
+		return out, err
 	}
 
-	var err error
-	var srcClient *api.Client
-	var dstClient *api.Client
+	if *listenPort < 0 {
+		err = fmt.Errorf("Error: Illegal listenPort value. It must be > 0 to act as a server listening on this port")
+		return out, err
+	}
+
+	return out, err // err == nil
+}
+
+/*
+ * Call this for a single list or copy action
+ * It is important that only one action is outstanding at a time
+ * This tool currently supports concurrent processing for a single action only.
+ * Any web request must deny action requests if a prior request is being served
+ *
+ * depends on prepConmnections having been previously invoked
+ * depends on doCopy or doMirror to be defined
+ * depends on srcVaultAddr, srcVaultToken dstVaultAdr, dstVaultToken be defined
+ */
+func prepForAction() (err error) {
 	var srcKvApi bool
 	var srcKvRoot string
 	var dstKvApi bool
 	var dstKvRoot string
+
+	if *doCopy || *doMirror {
+		if *dstVaultAddr == "" {
+			err = fmt.Errorf("Unspecified dstVaultAddr")
+			return err
+		}
+
+		if *dstVaultToken == "" {
+			err = fmt.Errorf("Unspecified dstVaultToken")
+			return err
+		}
+
+		dstKvApi, dstKvRoot, err = fetchVersionInfo(dstClients[0])
+		if err != nil {
+			err = fmt.Errorf("Error fetching version info: %s", err)
+			return err
+		}
+
+		if *srcVaultAddr != "" {
+			srcKvApi, srcKvRoot, err = fetchVersionInfo(srcClients[0])
+			if err != nil {
+				err = fmt.Errorf("Error fetching version info: %s", err)
+				return err
+			}
+			if dstKvApi != srcKvApi {
+				err = fmt.Errorf("The Vault kv api is different betwen the source and destination Vaults")
+				return err
+			}
+			if dstKvRoot != srcKvRoot {
+				err = fmt.Errorf("The Vault kv root is different betwen the source and destination Vaults\n")
+				return err
+			}
+			kvApi = srcKvApi
+			kvRoot = srcKvRoot
+		} else if *srcInputFile == "" {
+			err = fmt.Errorf("You must specifiy either a srcInputFile or srcVaultAddr\n")
+			return err
+		} else {
+			// we will read from srcInputFile
+			kvApi = dstKvApi
+			kvRoot = dstKvRoot
+		}
+	} else {
+		// listing src vault mode
+		if *srcVaultAddr != "" {
+			srcKvApi, srcKvRoot, err = fetchVersionInfo(srcClients[0])
+			if err != nil {
+				err = fmt.Errorf("Error fetching version info: %s", err)
+				return err
+			}
+			kvApi = srcKvApi
+			kvRoot = srcKvRoot
+		} // else case will not happen as per the earlier prepConnections chceck
+	}
+	return err // nil
+}
+
+func prepConnections() (err error) {
+	var srcClient *api.Client
+	var dstClient *api.Client
 
 	if *srcVaultAddr != "" {
 		srcClients = make([]*api.Client, *numWorkers)
@@ -378,81 +538,33 @@ func prep() {
 				Address: *srcVaultAddr,
 			})
 			if err != nil {
-				log.Printf("Error from vault NewClient : %s\n", err)
-				os.Exit(1)
+				err = fmt.Errorf("Error from vault NewClient : %s\n", err)
+				return err
 			}
 			srcClient.SetToken(*srcVaultToken)
 			srcClients[i] = srcClient
-		} // else we do not need srcClien connections as we will read from srcInputFile
+		} // else we do not need srcClient connections as we will read from srcInputFile
 
 		if *doCopy || *doMirror {
 			dstClient, err = api.NewClient(&api.Config{
 				Address: *dstVaultAddr,
 			})
 			if err != nil {
-				log.Printf("Error from vault NewClient : %s\n", err)
-				os.Exit(1)
+				err = fmt.Errorf("Error from vault NewClient : %s\n", err)
+				return err
 			}
 			dstClient.SetToken(*dstVaultToken)
 			dstClients[i] = dstClient
 		}
 	}
 
-	if *doCopy || *doMirror {
-		if *dstVaultAddr == "" {
-			log.Printf("Unspecified dstVaultAddr\n")
-			os.Exit(1)
-		}
-
-		if *dstVaultToken == "" {
-			log.Printf("Unspecified dstVaultToken\n")
-			os.Exit(1)
-		}
-
-		dstKvApi, dstKvRoot, err = fetchVersionInfo(dstClients[0])
-		if err != nil {
-			log.Printf("Error fetching version info: %s", err)
-			os.Exit(1)
-		}
-
-		if *srcVaultAddr != "" {
-			srcKvApi, srcKvRoot, err = fetchVersionInfo(srcClients[0])
-			if err != nil {
-				log.Printf("Error fetching version info: %s", err)
-				os.Exit(1)
-			}
-			if dstKvApi != srcKvApi {
-				log.Printf("The Vault kv api is different betwen the source and destination Vaults\n")
-				os.Exit(1)
-			}
-			if dstKvRoot != srcKvRoot {
-				log.Printf("The Vault kv root is different betwen the source and destination Vaults\n")
-				os.Exit(1)
-			}
-			kvApi = srcKvApi
-			kvRoot = srcKvRoot
-		} else {
-			// we will read from srcInputFile
-			kvApi = dstKvApi
-			kvRoot = dstKvRoot
-		}
-	} else {
-		// listing src vault mode
-		if *srcVaultAddr != "" {
-			srcKvApi, srcKvRoot, err = fetchVersionInfo(srcClients[0])
-			if err != nil {
-				log.Printf("Error fetching version info: %s", err)
-				os.Exit(1)
-			}
-			kvApi = srcKvApi
-			kvRoot = srcKvRoot
-		} // else case will not happen as per the earlier prep chceck
-	}
+	return err // nil
 }
 
-func main() {
-	prep()
-
+/*
+ * Depends on prepConnections and prepForAction having been previously invoked
+ */
+func doAction() (err error) {
 	var path string
 	if kvApi {
 		if strings.HasSuffix(kvRoot, "/") {
@@ -465,24 +577,68 @@ func main() {
 	}
 
 	if *doCopy || *doMirror {
-		err := copy(path)
+		err = copy(path)
 		if err != nil {
-			log.Printf("Error copying secrets: %s", err)
-			os.Exit(1)
+			err = fmt.Errorf("Error copying secrets: %s", err)
+			return err
 		}
 	} else {
-		var err error
 		listFile, err = os.Create(*listOutputFile)
 		if err != nil {
-			log.Printf("Error creating list output file %s: %s", *listOutputFile, err)
-			os.Exit(1)
+			err = fmt.Errorf("Error creating list output file %s: %s", *listOutputFile, err)
+			return err
 		}
 		defer listFile.Close()
 
 		err = list2(path)
 		if err != nil {
-			log.Printf("Error listing secrets: %s", err)
-			os.Exit(1)
+			err = fmt.Errorf("Error listing secrets: %s", err)
+			return err
 		}
+	}
+	return err // nil
+}
+
+func main() {
+	var err error
+
+	out, err := flags()
+	if err != nil {
+		log.Printf("%s", err)
+		os.Exit(1)
+	}
+	if out != "" {
+		log.Printf("%s", out)
+		os.Exit(0)
+	}
+
+	if *listenPort > 0 {
+		r := mux.NewRouter()
+		r.HandleFunc("/health", healthHandler).Methods(http.MethodGet)
+		r.HandleFunc("/list/{srcaddr}", listHandler).Methods(http.MethodGet)
+		r.HandleFunc("/copyfromfile/{dstaddr}/", copyFromFileHandler).Methods(http.MethodPost)
+		r.HandleFunc("/copyfromvault/{srcaddr}/{dstaddr}", copyFromVaultHandler).Methods(http.MethodPost)
+		addr  := fmt.Sprintf("localhost:%d", *listenPort)
+		log.Fatal(http.ListenAndServe(addr, r))
+	}
+
+	// This tool is running in client mode so only a single action will be performed (a list or copy of one flavor or another)
+	// This sequence will be the same for each web request (assuming no outstanding request is in progress)
+	err = prepConnections()
+	if err != nil {
+		log.Printf("%s", err)
+		os.Exit(1)
+	}
+
+	err = prepForAction()
+	if err != nil {
+		log.Printf("%s", err)
+		os.Exit(1)
+	}
+
+	err = doAction()
+	if err != nil {
+		log.Printf("%s", err)
+		os.Exit(1)
 	}
 }
