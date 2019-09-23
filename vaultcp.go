@@ -31,7 +31,7 @@ var (
 	// flags below
 	listenPort     *int
 	numWorkers     *int
-	version        *string
+	version        string
 	doCopy         *bool
 	doMirror       *bool
 	srcInputFile   *string
@@ -414,11 +414,11 @@ func flags() (out string, err error) {
 	dstVaultAddr = flag.String("dstVaultAddr", "", "Destination Vault address (required for doCopy and doMirror)")
 	dstVaultToken = flag.String("dstVaultToken", "", "Destination Vault token (required for doCopy and doMirror)")
 	listOutputFile = flag.String("listOutputFile", "/tmp/vaultcp.out", "File to write listing (suitable for use by srcInputFile)")
-        version = flag.String("v", "false", "set to \"true\" to print current version and exit")
+        flag.StringVar(&version, "v", "false", "set to \"true\" to print current version and exit")
 
 	flag.Parse()
 
-	if *version == "true" {
+	if version == "true" {
 		out = versionString
 		return out, err
 	}
