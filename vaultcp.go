@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,8 @@ import (
 	"github.com/hashicorp/vault/api"
 	"github.com/gorilla/mux"
 )
+
+const maxUploadSize = 2 * 1024 * 1024 // 2 mb
 
 var (
 	working    bool = false
@@ -94,18 +97,11 @@ func copy(path string) (err error) {
 		return err
 	}
 
-	numdstkeys := len(dstKV)
-	if numdstkeys > 0 {
-		log.Printf("Warning: The destination Vault already has %d keys\n", numdstkeys)
-	}
-
 	numsrckeys := len(srcKV)
 	log.Printf("Info: The source Vault has %d keys\n", numsrckeys)
 
-	if numsrckeys == 0 {
-		log.Printf("Warning: The source Vault has no keys\n")
-		// TODO delete entries in dest when doMirror
-	}
+	numdstkeys := len(dstKV)
+	log.Printf("Info: The destination Vault has %d keys\n", numdstkeys)
 
 	// Divide the kv entries into numWorkers so we can update the dst Vault in parallel
 	jobMaps := make([]map[string]interface{}, *numWorkers)
@@ -115,18 +111,13 @@ func copy(path string) (err error) {
 
 	count := 0
 	for k, sv := range srcKV {
-		// TODO: don't list and read dest unless doMirror
-		dv := dstKV[k]
-		if dv == "" || dv == nil {
-			log.Printf("Copy (for create) src to dst vault: %s value: %s\n", k, sv)
+		var ok bool
+		_, ok = dstKV[k]
+		if ! ok {
+			// k, v entry is missing from dst so register a job to copy it
+			log.Printf("Copying key %s from source to dest Vault (it is missing from dest)\n", k)
 			count++
-			jobMaps[count%*numWorkers][k] = sv
-		} else if sv != dv {
-			log.Printf("Copy (for update?) src to dst vault: %s value: %s\n", k, sv)
-			count++
-			jobMaps[count%*numWorkers][k] = sv
-		} else {
-			log.Printf("The src and dst Vaults have a matching kv entry for key %s\n", k)
+			jobMaps[count%*numWorkers][k] = sv // sv will be non nil when read from input file
 		}
 	}
 
@@ -192,9 +183,8 @@ func writeWorker(id int, job map[string]interface{}, wg *sync.WaitGroup) {
 			if err != nil {
 				log.Printf("Error from readRaw: %s\n", err)
 			}
-		} else {
 		}
-		log.Printf("!!! write worker %d writing %s => %+v\n", id, k, v)
+		log.Printf("!!! write worker %d writing key %s\n", id, k)
 		_, err = dstClients[id].Logical().Write(k, v.(map[string]interface{}))
 		if err != nil {
 			log.Printf("Error from Vault write: %s\n", err)
@@ -359,6 +349,25 @@ func resetForListVaultAction(srcaddr, srctoken string) {
 	*dstVaultToken = ""
 }
 
+func resetForFileCopyAction(outfile, dstaddr, dsttoken string) {
+	*doCopy = true
+	*doMirror = false
+	*srcInputFile = outfile 
+	*srcVaultAddr = ""
+	*srcVaultToken = ""
+	*dstVaultAddr = "dstAddr"
+	*dstVaultToken = dsttoken
+}
+
+type VaultConnect struct {
+	SrcAddr string `json:"srcAddr"`
+	DstAddr string `json:"dstAddr"`
+}
+
+/*
+ * Example call:
+ * curl -X GET -v -d '{"srcAddr":"http://127.0.0.1:8200"}' -H "X-Vault-Token:root" http://127.0.0.1:6200/list
+ */
 func listHandler(w http.ResponseWriter, r *http.Request) {
 	if working {
 		w.WriteHeader(http.StatusForbidden)
@@ -368,25 +377,29 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 	setWorking(true)
 	defer setWorking(false)
 
-	vars := mux.Vars(r)
+	srctoken := r.Header.Get("X-Vault-Token")
 
-        srctoken := r.Header.Get("X-Vault-Token")
-	scheme := vars["scheme"]
-	host := vars["host"]
-	port := vars["port"]
-	srcaddr := fmt.Sprintf("%s://%s:%s", scheme, host, port)
+	decoder := json.NewDecoder(r.Body)
+
+	var vc VaultConnect
+	err := decoder.Decode(&vc)
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	srcaddr := vc.SrcAddr
 
 	resetForListVaultAction(srcaddr, srctoken)
 
-	log.Printf("1 listHandler srcAddr = %s\n", *srcVaultAddr)
-	err := prepConnections()
+	err = prepConnections()
 	if err != nil {
 		log.Printf("%s", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("2 listHandler srcAddr = %s\n", *srcVaultAddr)
 	err = prepForAction()
 	if err != nil {
 		log.Printf("%s", err)
@@ -394,7 +407,6 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("3 listHandler srcAddr = %s\n", *srcVaultAddr)
 	err = doAction()
 	if err != nil {
 		log.Printf("%s", err)
@@ -402,7 +414,6 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("4 listHandler srcAddr = %s\n", *srcVaultAddr)
 	file, err := os.Open(*listOutputFile)
 	if err != nil {
 		log.Printf("%s", err)
@@ -410,14 +421,15 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("5 listHandler srcAddr = %s\n", *srcVaultAddr)
 	io.Copy(w, file)
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusOK)
 }
 
+// curl -F file=@"/path/filename.txt" http://localhost:6200/copyfromfile
+// TODO: a work in progress
 func copyFromFileHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Hello from copyFromFileHandler\n")
 	if working {
 		w.WriteHeader(http.StatusForbidden)
 		io.WriteString(w, "busy: try again later")
@@ -426,13 +438,163 @@ func copyFromFileHandler(w http.ResponseWriter, r *http.Request) {
 	setWorking(true)
 	defer setWorking(false)
 
-	vars := mux.Vars(r)
+	// dsttoken := r.Header.Get("X-Vault-Token")
 
-	w.Header().Set("Content-Type", "application/json")
+/*
+	decoder := json.NewDecoder(r.Body)
+
+	var vc VaultConnect
+	err := decoder.Decode(&vc)
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+*/
+
+/*
+	r.ParseForm()
+	for k,v := range r.Form {
+		log.Printf("k = %s ; v = %s\n", k, v)
+	}
+*/
+
+
+	// validate file size
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
+		log.Printf("Error %v\n", err)
+		w.Write([]byte("FILE_TOO_BIG"))
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+
+
+
+/*
+OSXRMAURMBP15:vaultcp rmauri$ curl -X POST -F file=@./skdrivedev-vaultcp.out -F data='{"dstAddr":"http://127.0.0.1:8200"};type=application/json' http://127.0.0.1:6200/copyfromfile
+2019/09/24 14:05:38 Hello from copyFromFileHandler
+2019/09/24 14:05:38 r.MultipartForm = &{Value:map[data:[{"dstAddr":"http://127.0.0.1:8200"}]] File:map[file:[0xc000166000]]}
+*/
+
+	m := r.MultipartForm
+	log.Printf("r.MultipartForm = %+v\n", m)
+
+/*
+		//get the *fileheaders
+		files := m.File["myfiles"]
+		for i, _ := range files {
+
+
+	addr := r.PostFormValue("addr")
+	if addr == "" {
+		w.Write([]byte("INVALID_ADDR"))
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("addr = %+v\n")
+*/
+
+	// fileType := r.PostFormValue("type")
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		log.Printf("Error %v\n", err)
+		w.Write([]byte("INVALID_FILE"))
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	// log.Printf("file=%v header=%v\n", file, header)
+
+	defer file.Close()
+
+	tempFile, err := ioutil.TempFile("/tmp", "vaultcp.out")
+	if err != nil {
+		log.Printf("Error %v\n", err)
+		w.Write([]byte("CANT_SAVE_OUTPUT_FILE"))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	defer tempFile.Close()
+
+	// read all of the contents of our uploaded file into a byte array
+	fileBytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Printf("Error %v\n", err)
+		w.Write([]byte("CANT_READ_FILE"))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// write this byte array to our temporary file
+	tempFile.Write(fileBytes)
+	log.Printf("wrote %d bytes to temp file %v\n", len(fileBytes), tempFile)
+
+
+//	w.Write([]byte(header.Filename))
+
+/*
+		// check file type, detectcontenttype only needs the first 512 bytes
+		filetype := http.DetectContentType(fileBytes)
+		switch filetype {
+		case "image/jpeg", "image/jpg":
+		case "image/gif", "image/png":
+		case "application/pdf":
+			break
+		default:
+			renderError(w, "INVALID_FILE_TYPE", http.StatusBadRequest)
+			return
+		}
+		fileName := randToken(12)
+		fileEndings, err := mime.ExtensionsByType(fileType)
+		if err != nil {
+			renderError(w, "CANT_READ_FILE_TYPE", http.StatusInternalServerError)
+			return
+		}
+		newPath := filepath.Join(uploadPath, fileName+fileEndings[0])
+		fmt.Printf("FileType: %s, File: %s\n", fileType, newPath)
+
+		// write file
+		newFile, err := os.Create(newPath)
+		if err != nil {
+			renderError(w, "CANT_WRITE_FILE", http.StatusInternalServerError)
+			return
+		}
+		defer newFile.Close() // idempotent, okay to call twice
+		if _, err := newFile.Write(fileBytes); err != nil || newFile.Close() != nil {
+			renderError(w, "CANT_WRITE_FILE", http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("SUCCESS"))
+*/
+
+/*
+	resetForFileCopyAction(header.Filename, vc.DstAddr, dsttoken)
+
+	err = prepConnections()
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	err = prepForAction()
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	err = doAction()
+	if err != nil {
+		log.Printf("%s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+*/
+
 	w.WriteHeader(http.StatusOK)
-
-	msg := fmt.Sprintf("{\"copyFromFile\":{\"dstaddr\":\"%s\"}}", vars["dstaddr"])
-	io.WriteString(w, msg)
 }
 
 func copyFromVaultHandler(w http.ResponseWriter, r *http.Request) {
@@ -465,7 +627,7 @@ func flags() (out string, err error) {
 	dstVaultAddr = flag.String("dstVaultAddr", "", "Destination Vault address (required for doCopy and doMirror)")
 	dstVaultToken = flag.String("dstVaultToken", "", "Destination Vault token (required for doCopy and doMirror)")
 	listOutputFile = flag.String("listOutputFile", "/tmp/vaultcp.out", "File to write listing (suitable for use by srcInputFile)")
-        flag.StringVar(&version, "v", "false", "set to \"true\" to print current version and exit")
+	flag.StringVar(&version, "v", "false", "set to \"true\" to print current version and exit")
 
 	flag.Parse()
 
@@ -576,10 +738,7 @@ func prepConnections() (err error) {
 	var srcClient *api.Client
 	var dstClient *api.Client
 
-	if *srcVaultAddr != "" {
-		srcClients = make([]*api.Client, *numWorkers)
-	}
-
+	srcClients = make([]*api.Client, *numWorkers)
 	dstClients = make([]*api.Client, *numWorkers)
 	for i := 0; i < *numWorkers; i++ {
 		if *srcVaultAddr != "" {
@@ -648,6 +807,16 @@ func doAction() (err error) {
 	return err // nil
 }
 
+func runServer() {
+	r := mux.NewRouter()
+	r.HandleFunc("/health", healthHandler).Methods(http.MethodGet)
+	r.HandleFunc("/list", listHandler).Methods(http.MethodGet)
+	r.HandleFunc("/copyfromfile", copyFromFileHandler).Methods(http.MethodPost)
+	r.HandleFunc("/copyfromvault/{srcaddr}/{dstaddr}", copyFromVaultHandler).Methods(http.MethodPost)
+	addr  := fmt.Sprintf("localhost:%d", *listenPort)
+	log.Fatal(http.ListenAndServe(addr, r))
+}
+
 func main() {
 	var err error
 
@@ -662,13 +831,7 @@ func main() {
 	}
 
 	if *listenPort > 0 {
-		r := mux.NewRouter()
-		r.HandleFunc("/health", healthHandler).Methods(http.MethodGet)
-		r.HandleFunc("/list/{scheme}/{host}/{port}", listHandler).Methods(http.MethodGet)
-		r.HandleFunc("/copyfromfile/{dstaddr}/", copyFromFileHandler).Methods(http.MethodPost)
-		r.HandleFunc("/copyfromvault/{srcaddr}/{dstaddr}", copyFromVaultHandler).Methods(http.MethodPost)
-		addr  := fmt.Sprintf("localhost:%d", *listenPort)
-		log.Fatal(http.ListenAndServe(addr, r))
+		runServer()
 	}
 
 	// This tool is running in client mode so only a single action will be performed (a list or copy of one flavor or another)
