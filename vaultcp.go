@@ -32,6 +32,7 @@ var (
 	versionString string
 
 	// flags below
+        kvRootFlag     *string
 	listenPort     *int
 	numWorkers     *int
 	version        string
@@ -301,15 +302,19 @@ func readRaw(client *api.Client, path string) (value map[string]interface{}, err
 
 func fetchVersionInfo(client *api.Client) (kvApiLocal bool, kvRoot string, err error) {
 	sys := client.Sys()
-	mounts, err := sys.ListMounts()
-	if err != nil {
-		return kvApiLocal, kvRoot, err
-	}
+	if *kvRootFlag != "" {
+		kvRoot = *kvRootFlag
+	} else {
+		mounts, err := sys.ListMounts()
+		if err != nil {
+			return kvApiLocal, kvRoot, err
+		}
 
-	for k, v := range mounts {
-		if v.Type == "kv" {
-			kvRoot = k
-			break
+		for k, v := range mounts {
+			if v.Type == "kv" {
+				kvRoot = k
+				break
+			}
 		}
 	}
 
@@ -617,6 +622,8 @@ func copyFromVaultHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func flags() (out string, err error) {
+	kvRootFlag = flag.String("kvRootFlag", "", "Root of secret path to consider. Set to like \"secret/skydrivedev\" (or appropriate)  when using a non-admin token (can't discover from the real kv root mount point)")
+
 	listenPort = flag.Int("listenPort", 0, "Http Listen port (when > 0 act as a server)")
 	numWorkers = flag.Int("numWorkers", 10, "Number of workers to enable parallel execution")
 	doCopy = flag.Bool("doCopy", false, "Copy the secrets from the source to destination Vault (default: false)")
