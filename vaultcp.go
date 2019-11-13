@@ -16,23 +16,23 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hashicorp/vault/api"
 	"github.com/gorilla/mux"
+	"github.com/hashicorp/vault/api"
 )
 
 const maxUploadSize = 2 * 1024 * 1024 // 2 mb
 
 var (
-	working    bool = false
-	kvRoot     string = ""
-	kvApi      bool   = false
-	srcClients []*api.Client
-	dstClients []*api.Client
-	listFile   *os.File
+	working       bool   = false
+	kvRoot        string = ""
+	kvApi         bool   = false
+	srcClients    []*api.Client
+	dstClients    []*api.Client
+	listFile      *os.File
 	versionString string
 
 	// flags below
-        kvRootFlag     *string
+	kvRootFlag     *string
 	listenPort     *int
 	numWorkers     *int
 	version        string
@@ -114,7 +114,7 @@ func copy(path string) (err error) {
 	for k, sv := range srcKV {
 		var ok bool
 		_, ok = dstKV[k]
-		if ! ok {
+		if !ok {
 			// k, v entry is missing from dst so register a job to copy it
 			log.Printf("Copying key %s from source to dest Vault (it is missing from dest)\n", k)
 			count++
@@ -357,7 +357,7 @@ func resetForListVaultAction(srcaddr, srctoken string) {
 func resetForFileCopyAction(outfile, dstaddr, dsttoken string) {
 	*doCopy = true
 	*doMirror = false
-	*srcInputFile = outfile 
+	*srcInputFile = outfile
 	*srcVaultAddr = ""
 	*srcVaultToken = ""
 	*dstVaultAddr = "dstAddr"
@@ -445,25 +445,24 @@ func copyFromFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// dsttoken := r.Header.Get("X-Vault-Token")
 
-/*
-	decoder := json.NewDecoder(r.Body)
+	/*
+		decoder := json.NewDecoder(r.Body)
 
-	var vc VaultConnect
-	err := decoder.Decode(&vc)
-	if err != nil {
-		log.Printf("%s", err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-*/
+		var vc VaultConnect
+		err := decoder.Decode(&vc)
+		if err != nil {
+			log.Printf("%s", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+	*/
 
-/*
-	r.ParseForm()
-	for k,v := range r.Form {
-		log.Printf("k = %s ; v = %s\n", k, v)
-	}
-*/
-
+	/*
+		r.ParseForm()
+		for k,v := range r.Form {
+			log.Printf("k = %s ; v = %s\n", k, v)
+		}
+	*/
 
 	// validate file size
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
@@ -474,33 +473,30 @@ func copyFromFileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
-
-
-/*
-OSXRMAURMBP15:vaultcp rmauri$ curl -X POST -F file=@./skdrivedev-vaultcp.out -F data='{"dstAddr":"http://127.0.0.1:8200"};type=application/json' http://127.0.0.1:6200/copyfromfile
-2019/09/24 14:05:38 Hello from copyFromFileHandler
-2019/09/24 14:05:38 r.MultipartForm = &{Value:map[data:[{"dstAddr":"http://127.0.0.1:8200"}]] File:map[file:[0xc000166000]]}
-*/
+	/*
+	   OSXRMAURMBP15:vaultcp rmauri$ curl -X POST -F file=@./skdrivedev-vaultcp.out -F data='{"dstAddr":"http://127.0.0.1:8200"};type=application/json' http://127.0.0.1:6200/copyfromfile
+	   2019/09/24 14:05:38 Hello from copyFromFileHandler
+	   2019/09/24 14:05:38 r.MultipartForm = &{Value:map[data:[{"dstAddr":"http://127.0.0.1:8200"}]] File:map[file:[0xc000166000]]}
+	*/
 
 	m := r.MultipartForm
 	log.Printf("r.MultipartForm = %+v\n", m)
 
-/*
-		//get the *fileheaders
-		files := m.File["myfiles"]
-		for i, _ := range files {
+	/*
+			//get the *fileheaders
+			files := m.File["myfiles"]
+			for i, _ := range files {
 
 
-	addr := r.PostFormValue("addr")
-	if addr == "" {
-		w.Write([]byte("INVALID_ADDR"))
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+		addr := r.PostFormValue("addr")
+		if addr == "" {
+			w.Write([]byte("INVALID_ADDR"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 
-	log.Printf("addr = %+v\n")
-*/
+		log.Printf("addr = %+v\n")
+	*/
 
 	// fileType := r.PostFormValue("type")
 	file, _, err := r.FormFile("file")
@@ -536,10 +532,9 @@ OSXRMAURMBP15:vaultcp rmauri$ curl -X POST -F file=@./skdrivedev-vaultcp.out -F 
 	tempFile.Write(fileBytes)
 	log.Printf("wrote %d bytes to temp file %v\n", len(fileBytes), tempFile)
 
+	//	w.Write([]byte(header.Filename))
 
-//	w.Write([]byte(header.Filename))
-
-/*
+	/*
 		// check file type, detectcontenttype only needs the first 512 bytes
 		filetype := http.DetectContentType(fileBytes)
 		switch filetype {
@@ -572,32 +567,32 @@ OSXRMAURMBP15:vaultcp rmauri$ curl -X POST -F file=@./skdrivedev-vaultcp.out -F 
 			return
 		}
 		w.Write([]byte("SUCCESS"))
-*/
+	*/
 
-/*
-	resetForFileCopyAction(header.Filename, vc.DstAddr, dsttoken)
+	/*
+		resetForFileCopyAction(header.Filename, vc.DstAddr, dsttoken)
 
-	err = prepConnections()
-	if err != nil {
-		log.Printf("%s", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
+		err = prepConnections()
+		if err != nil {
+			log.Printf("%s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 
-	err = prepForAction()
-	if err != nil {
-		log.Printf("%s", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
+		err = prepForAction()
+		if err != nil {
+			log.Printf("%s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 
-	err = doAction()
-	if err != nil {
-		log.Printf("%s", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-*/
+		err = doAction()
+		if err != nil {
+			log.Printf("%s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	*/
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -782,8 +777,10 @@ func prepConnections() (err error) {
 func doAction() (err error) {
 	var path string
 	if kvApi {
-		if strings.HasSuffix(kvRoot, "/") {
-			path = fmt.Sprintf("%smetadata", kvRoot)
+		kvRoot = strings.TrimRight(kvRoot, "/")
+		if strings.Count(kvRoot, "/") > 0 {
+			kvRootSplit := strings.Split(kvRoot, "/")
+			path = fmt.Sprintf("%s/metadata/%s", kvRootSplit[0], strings.Join(kvRootSplit[1:], "/"))
 		} else {
 			path = fmt.Sprintf("%s/metadata", kvRoot)
 		}
@@ -820,7 +817,7 @@ func runServer() {
 	r.HandleFunc("/list", listHandler).Methods(http.MethodGet)
 	r.HandleFunc("/copyfromfile", copyFromFileHandler).Methods(http.MethodPost)
 	r.HandleFunc("/copyfromvault/{srcaddr}/{dstaddr}", copyFromVaultHandler).Methods(http.MethodPost)
-	addr  := fmt.Sprintf("localhost:%d", *listenPort)
+	addr := fmt.Sprintf("localhost:%d", *listenPort)
 	log.Fatal(http.ListenAndServe(addr, r))
 }
 
