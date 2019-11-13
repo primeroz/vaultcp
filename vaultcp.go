@@ -777,7 +777,8 @@ func prepConnections() (err error) {
 func doAction() (err error) {
 	var path string
 	if kvApi {
-		kvRoot = strings.TrimRight(kvRoot, "/")
+		kvRoot = strings.TrimLeft("kvRoot", "/")
+		kvRoot = strings.TrimRight("kvRoot", "/")
 		if strings.Count(kvRoot, "/") > 0 {
 			kvRootSplit := strings.Split(kvRoot, "/")
 			path = fmt.Sprintf("%s/metadata/%s", kvRootSplit[0], strings.Join(kvRootSplit[1:], "/"))
