@@ -1,4 +1,4 @@
-VERSION=v0.1.0
+VERSION=v0.1.1
 TAGDESC="Initial"
 BUILDTIME?=$$(date +%m-%d-%Y-%H:%M)
 VERSIONSTRING=${VERSION}-${BUILDTIME}
@@ -19,8 +19,10 @@ test:
 fmt:
 	gofmt -w $(GOFMT_FILES)
 
-release:
+tag:
 	git tag -a ${VERSION} -m ${TAGDESC}
+
+release:
 	RELVERSION=${VERSIONSTRING} goreleaser 
 
 .PHONY: all bin default test fmt release
