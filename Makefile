@@ -1,5 +1,5 @@
 VERSION=v0.1.1
-TAGDESC="Initial"
+TAGDESC="Bug fixes"
 BUILDTIME?=$$(date +%m-%d-%Y-%H:%M)
 VERSIONSTRING=${VERSION}-${BUILDTIME}
 GOFMT_FILES?=$$(find . -name '*.go')
